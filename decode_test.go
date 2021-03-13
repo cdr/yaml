@@ -1111,8 +1111,8 @@ func (s *S) TestUnmarshalerWholeDocument(c *C) {
 }
 
 func (s *S) TestUnmarshalerTypeError(c *C) {
-	unmarshalerResult[2] = &yaml.TypeError{[]string{"foo"}}
-	unmarshalerResult[4] = &yaml.TypeError{[]string{"bar"}}
+	unmarshalerResult[2] = &yaml.TypeError{toErrors([]string{"foo"})}
+	unmarshalerResult[4] = &yaml.TypeError{toErrors([]string{"bar"})}
 	defer func() {
 		delete(unmarshalerResult, 2)
 		delete(unmarshalerResult, 4)
@@ -1142,8 +1142,8 @@ func (s *S) TestUnmarshalerTypeError(c *C) {
 }
 
 func (s *S) TestObsoleteUnmarshalerTypeError(c *C) {
-	unmarshalerResult[2] = &yaml.TypeError{[]string{"foo"}}
-	unmarshalerResult[4] = &yaml.TypeError{[]string{"bar"}}
+	unmarshalerResult[2] = &yaml.TypeError{toErrors([]string{"foo"})}
+	unmarshalerResult[4] = &yaml.TypeError{toErrors([]string{"bar"})}
 	defer func() {
 		delete(unmarshalerResult, 2)
 		delete(unmarshalerResult, 4)
@@ -1672,3 +1672,11 @@ func (s *S) TestFuzzCrashers(c *C) {
 //		yaml.Marshal(&v)
 //	}
 //}
+
+func toErrors(v []string) []error {
+	errs := make([]error, len(v))
+	for i := range v {
+		errs[i] = fmt.Errorf(v[i])
+	}
+	return errs
+}

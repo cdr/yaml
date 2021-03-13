@@ -290,6 +290,8 @@ func handleErr(err *error) {
 	if v := recover(); v != nil {
 		if e, ok := v.(yamlError); ok {
 			*err = e.err
+		} else if e, ok := v.(YamlError); ok {
+			*err = e
 		} else {
 			panic(v)
 		}
@@ -313,11 +315,15 @@ func failf(format string, args ...interface{}) {
 // types. When this error is returned, the value is still
 // unmarshaled partially.
 type TypeError struct {
-	Errors []string
+	Errors []error
 }
 
 func (e *TypeError) Error() string {
-	return fmt.Sprintf("yaml: unmarshal errors:\n  %s", strings.Join(e.Errors, "\n  "))
+	errors := make([]string, len(e.Errors))
+	for i := range errors {
+		errors[i] = e.Errors[i].Error()
+	}
+	return fmt.Sprintf("yaml: unmarshal errors:\n  %s", strings.Join(errors, "\n  "))
 }
 
 type Kind uint32
@@ -363,17 +369,20 @@ const (
 //             Address yaml.Node
 //     }
 //     err := yaml.Unmarshal(data, &person)
-// 
+//
 // Or by itself:
 //
 //     var person Node
 //     err := yaml.Unmarshal(data, &person)
 //
 type Node struct {
+	Parent         *Node
+	SequenceNumber *int
+
 	// Kind defines whether the node is a document, a mapping, a sequence,
 	// a scalar value, or an alias to another node. The specific data type of
 	// scalar nodes may be obtained via the ShortTag and LongTag methods.
-	Kind  Kind
+	Kind Kind
 
 	// Style allows customizing the apperance of the node in the tree.
 	Style Style
@@ -415,12 +424,38 @@ type Node struct {
 	Column int
 }
 
+// Path returns the hierarchy path to get to the field where this node is.
+func (n *Node) Path() []string {
+	var path []string
+	//if n.Kind == MappingNode || n.Kind == SequenceNode {
+	path = []string{n.Value}
+	//}
+
+	next := n.Parent
+	for next != nil {
+		sect := next.Value
+		if next.SequenceNumber != nil {
+			sect += fmt.Sprintf("[%d]", *next.SequenceNumber)
+		}
+		path = append([]string{sect}, path...)
+		next = next.Parent
+	}
+	return path
+}
+
+func (n *Node) SetParent(parent *Node) {
+	n.Parent = parent
+}
+
+func (n *Node) SetSequenceNumber(sequenceNumber int) {
+	n.SequenceNumber = &sequenceNumber
+}
+
 // IsZero returns whether the node has all of its fields unset.
 func (n *Node) IsZero() bool {
 	return n.Kind == 0 && n.Style == 0 && n.Tag == "" && n.Value == "" && n.Anchor == "" && n.Alias == nil && n.Content == nil &&
 		n.HeadComment == "" && n.LineComment == "" && n.FootComment == "" && n.Line == 0 && n.Column == 0
 }
-
 
 // LongTag returns the long form of the tag that indicates the data type for
 // the node. If the Tag field isn't explicitly defined, one will be computed
@@ -602,6 +637,7 @@ func getStructInfo(st reflect.Type) (*structInfo, error) {
 					for _, finfo := range sinfo.FieldsList {
 						if _, found := fieldsMap[finfo.Key]; found {
 							msg := "duplicated key '" + finfo.Key + "' in struct " + st.String()
+							//return nil, NewYamlError(nil,"",  )
 							return nil, errors.New(msg)
 						}
 						if finfo.Inline == nil {

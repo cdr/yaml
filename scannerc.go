@@ -1407,6 +1407,7 @@ func yaml_parser_fetch_value(parser *yaml_parser_t) bool {
 
 			// Check if we are allowed to start a complex value.
 			if !parser.simple_key_allowed {
+
 				return yaml_parser_set_scanner_error(parser, "", parser.mark,
 					"mapping values are not allowed in this context")
 			}

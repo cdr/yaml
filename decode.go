@@ -310,7 +310,7 @@ func (p *parser) mapping() *Node {
 type decoder struct {
 	doc     *Node
 	aliases map[*Node]bool
-	terrors []string
+	terrors []error
 
 	stringMapType  reflect.Type
 	generalMapType reflect.Type
@@ -354,7 +354,11 @@ func (d *decoder) terror(n *Node, tag string, out reflect.Value) {
 			value = " `" + value + "`"
 		}
 	}
-	d.terrors = append(d.terrors, fmt.Sprintf("line %d: cannot unmarshal %s%s into %s", n.Line, shortTag(tag), value, out.Type()))
+
+	// CustomErrorEvent
+	err := fmt.Errorf("line %d: cannot unmarshal %s%s into %s", n.Line, shortTag(tag), value, out.Type())
+	d.terrors = append(d.terrors, NewWrongTypeError(err, *n, out))
+	// d.terrors = append(d.terrors, fmt.Sprintf("line %d: cannot unmarshal %s%s into %s", n.Line, shortTag(tag), value, out.Type()))
 }
 
 func (d *decoder) callUnmarshaler(n *Node, u Unmarshaler) (good bool) {
@@ -745,6 +749,9 @@ func (d *decoder) sequence(n *Node, out reflect.Value) (good bool) {
 	j := 0
 	for i := 0; i < l; i++ {
 		e := reflect.New(et).Elem()
+		n.Content[i].SetParent(n)
+		n.Content[i].SetSequenceNumber(i)
+
 		if ok := d.unmarshal(n.Content[i], e); ok {
 			out.Index(j).Set(e)
 			j++
@@ -768,7 +775,12 @@ func (d *decoder) mapping(n *Node, out reflect.Value) (good bool) {
 			for j := i + 2; j < l; j += 2 {
 				nj := n.Content[j]
 				if ni.Kind == nj.Kind && ni.Value == nj.Value {
-					d.terrors = append(d.terrors, fmt.Sprintf("line %d: mapping key %#v already defined at line %d", nj.Line, nj.Value, ni.Line))
+					// CustomErrorEvent
+					err := fmt.Errorf("line %d: mapping key %#v already defined at line %d", nj.Line, nj.Value, ni.Line)
+					// Pass the empty string for the name, as nj.Value is the name.
+					nj.SetParent(n.Parent) // The parent is not set until later. Set it now for the error
+					d.terrors = append(d.terrors, NewAlreadyDefinedError(err, *nj, out, "", ni.Line))
+					//d.terrors = append(d.terrors, fmt.Sprintf("line %d: mapping key %#v already defined at line %d", nj.Line, nj.Value, ni.Line))
 				}
 			}
 		}
@@ -828,6 +840,8 @@ func (d *decoder) mapping(n *Node, out reflect.Value) (good bool) {
 				failf("invalid map key: %#v", k.Interface())
 			}
 			e := reflect.New(et).Elem()
+
+			n.Content[i+1].SetParent(n.Content[i])
 			if d.unmarshal(n.Content[i+1], e) || n.Content[i+1].ShortTag() == nullTag && (mapIsNew || !out.MapIndex(k).IsValid()) {
 				out.SetMapIndex(k, e)
 			}
@@ -854,7 +868,7 @@ func isStringMap(n *Node) bool {
 func (d *decoder) mappingStruct(n *Node, out reflect.Value) (good bool) {
 	sinfo, err := getStructInfo(out.Type())
 	if err != nil {
-		panic(err)
+		panic(NewGoLangStructError(err))
 	}
 
 	var inlineMap reflect.Value
@@ -878,6 +892,14 @@ func (d *decoder) mappingStruct(n *Node, out reflect.Value) (good bool) {
 	l := len(n.Content)
 	for i := 0; i < l; i += 2 {
 		ni := n.Content[i]
+		// ni's parent is the parent of the node 'n'.
+		// Node 'n' is going to be '!!map', so we want it's parent
+		// to be passed forward.
+		ni.SetParent(n.Parent)
+		// Since we are skipping n.Parent, we also want to pass through
+		// the sequence number incase we are in a sequence.
+		ni.SequenceNumber = n.SequenceNumber
+
 		if isMerge(ni) {
 			d.merge(n.Content[i+1], out)
 			continue
@@ -888,7 +910,10 @@ func (d *decoder) mappingStruct(n *Node, out reflect.Value) (good bool) {
 		if info, ok := sinfo.FieldsMap[name.String()]; ok {
 			if d.uniqueKeys {
 				if doneFields[info.Id] {
-					d.terrors = append(d.terrors, fmt.Sprintf("line %d: field %s already set in type %s", ni.Line, name.String(), out.Type()))
+					// CustomErrorEvent
+					err := fmt.Errorf("line %d: field %s already set in type %s", ni.Line, name.String(), out.Type())
+					d.terrors = append(d.terrors, NewAlreadyDefinedError(err, *ni, out, name.String(), ni.Line))
+					//d.terrors = append(d.terrors, fmt.Sprintf("line %d: field %s already set in type %s", ni.Line, name.String(), out.Type()))
 					continue
 				}
 				doneFields[info.Id] = true
@@ -899,16 +924,21 @@ func (d *decoder) mappingStruct(n *Node, out reflect.Value) (good bool) {
 			} else {
 				field = d.fieldByIndex(n, out, info.Inline)
 			}
+			n.Content[i+1].SetParent(ni)
 			d.unmarshal(n.Content[i+1], field)
 		} else if sinfo.InlineMap != -1 {
 			if inlineMap.IsNil() {
 				inlineMap.Set(reflect.MakeMap(inlineMap.Type()))
 			}
 			value := reflect.New(elemType).Elem()
+			n.Content[i+1].SetParent(ni)
 			d.unmarshal(n.Content[i+1], value)
 			inlineMap.SetMapIndex(name, value)
 		} else if d.knownFields {
-			d.terrors = append(d.terrors, fmt.Sprintf("line %d: field %s not found in type %s", ni.Line, name.String(), out.Type()))
+			// CustomErrorEvent
+			err := fmt.Errorf("line %d: field %s not found in type %s", ni.Line, name.String(), out.Type())
+			d.terrors = append(d.terrors, NewUnknownFieldError(err, *ni, out, name.String()))
+			//d.terrors = append(d.terrors, fmt.Sprintf("line %d: field %s not found in type %s", ni.Line, name.String(), out.Type()))
 		}
 	}
 	return true
